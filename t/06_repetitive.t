@@ -1,10 +1,9 @@
-#!/usr/bin/perl
+#!/usr/bin/perl -w
 
 # Test a series of repetitive dives.
 
 use strict;
-use warnings;
-use Test::More tests => 11;
+use Test::More tests => 12;
 
 BEGIN { use_ok('SCUBA::Table::NoDeco') };
 
@@ -33,3 +32,6 @@ is($sdt->rnt(metres => 10.2), 37);
 $sdt->dive(metres => 10.2, minutes => 30);
 is($sdt->group,"G");
 
+# After a day on the surface, we should have no group.
+$sdt->surface(minutes => 24*60);
+ok(! $sdt->group, "Completely off-gassed");

@@ -1,8 +1,7 @@
-#!/usr/bin/perl
+#!/usr/bin/perl -w
 
 use strict;
-use warnings;
-use Test::More tests => 12;
+use Test::More tests => 14;
 
 BEGIN { use_ok("SCUBA::Table::NoDeco"); }
 
@@ -42,3 +41,9 @@ ok($@,"No times supplied");
 
 eval { $stn->dive(minutes => 18) };
 ok($@,"No depth supplied");
+
+eval { $stn->max_depth(units=>"furlongs") };
+ok($@,"Unsupported units supplied");
+
+eval { $stn->max_time(metres => 100) };
+ok($@,"Too great a depth for our tables");

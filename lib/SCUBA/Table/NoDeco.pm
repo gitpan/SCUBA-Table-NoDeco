@@ -4,7 +4,7 @@ use strict;
 use warnings;
 use Carp;
 
-our $VERSION = "0.01";
+our $VERSION = "0.02";
 
 =head1 NAME
 
@@ -63,6 +63,18 @@ The following methods are provided.
 
 use constant FEET2METRES => 0.3;
 
+# XXX - MIN_SURFACE_TIME and MAX_SURFACE_TIME may be problematic,
+#	as they appear to be table dependant.  SSI tables have a
+#	minimum surface time of 10 minutes.  PADI tables do not.
+#	Likewise, SSI have a MAX_SURFACE_TIME of 12 hours, in PADI
+#	it's variable, as little as 3 hours for a group A, with the
+#	maximum only being 6 (not 12).
+#
+#	This means that these almost certainly need to be dynamic
+#	values, based upon the tables.
+
+
+
 # Less than 10 minutes surface is considered part of the same dive.
 use constant MIN_SURFACE_TIME => 10;
 
@@ -87,6 +99,43 @@ our %LIMITS = (
 	33.0    => [ 0,   0,   5,  10,  13,  15],
 	36.0    => [ 0,   0,   5,  10],
 	39.0    => [ 0,   0,   5]
+    },
+    PADI => {
+	# 35 feet
+        10.5	=> [ 10,  19, 25, 29, 32,  36,  40,  44,  48,  52,  57,  62,
+		     67,  73, 79, 85, 92, 100, 108, 117, 127, 139, 152, 168,
+		    188, 205],
+	# 40 feet
+	12.0	=> [  9,  16, 22, 25, 27,  31,  34,  37,  40,  44,  48,  51,
+		     55,  60, 64, 69, 74,  79,  85,  91,  97, 104, 111, 120,
+		    129, 140],
+	# 50 feet
+	15.0	=> [  7,  13, 17, 19, 21,  24,  26,  28,  31,  33,  36,  39,
+		     41,  44, 47, 50, 53,  57,  60,  63,  67,  71,  75,  80],
+	# 60 feet
+	18.0	=> [  6,  11, 14, 16, 17,  19,  21,  23,  25,  27,  29,  31,
+		     33,  35, 37, 39, 42,  44,  47,  49,  52,  54,  55],
+	# 70 feet
+	21.0	=> [  5,   9, 12, 13, 15,  16,  18,  19,  21,  22,  24,  26,
+		     27,  29, 31, 33, 35,  36,  38,  40],
+	# 80 feet
+	24.0	=> [  4,   8, 10, 11, 13,  14,  15,  17,  18,  19,  21,  22,
+		     23,  25, 26, 28, 29,  30],
+	# 90 feet
+	27.0	=> [  4,   7,  9, 10, 11,  12,  13,  15,  16,  17,  18,  19,
+		     21,  22, 23, 24, 25],
+	#100 feet
+	30.0	=> [  3,   6,  8,  9, 10,  11,  12,  13,  14,  15,  16,  17,
+		     18,  19, 20],
+	#110 feet - XXX, Does the double-13 work here?  Test!!!
+	33.0	=> [  3,   6,  7,  8,  9,  10,  11,  12,  13,  13,  14,  15,
+		     16],
+	#120 feet - XXX, Test double-11
+	36.0	=> [  3,   5,  6,  7,  8,   9,  10,  11,  11,  12,  13],
+	#130 feet - XXX, Test double-7
+	39.0	=> [  3,   5,  6,  7,  7,   8,   9,  10],
+	#140 feet
+	42.0	=> [  0,   4,  5,  6,  7,   8],
     },
 );
 
@@ -114,7 +163,44 @@ our %SURFACE = (
 	        3*60+21 => "E", 2*60+38 => "F", 2*60+38 => "G", 1*60+35 => "H",
 		1*60+11 => "I", 0*60+49 => "J", 0*60+28 => "K" },
     },
+
 );
+
+# PADI tables seem to have a consistant transition between
+# groups (it always takes 3 hours to get out of group A, always
+# takes 47 minutes to get out of group B).  An extra minute
+# appears to be added to each group transition beyond the first.
+# As such, we can dynamically generate the PADI surface table.
+
+# XXX - PJF, Test this lots and lots.
+
+{
+	my @surface = ( 3*60, 47, 21, 8, (7) x 2, 6, (5) x 3, (4) x 3,
+			(3) x 6, (2) x 7 );
+
+	foreach my $start (0..25) {
+		my $accum = 0;
+		my $end   = $start;
+		while ($end >= 0) {
+			$accum += $surface[$end];
+			$SURFACE{PADI}{chr(ord('A')+$start)}{chr(ord('A')+$end)}
+				= $accum         # Accumulated time
+				+ $start - $end; # Number of groups passed.
+			$end--;
+		}
+	}
+
+}
+
+
+# The PADI tables are highly consistant, in that the residual time
+# for each group is equal to the dive times on table 1.  This means
+# that in our representation of these tables, they are exactly the same.
+# Rather convenient.
+#
+# XXX - Consider what this means for repetitive dives with no surface
+# interval.  Does it work to treat these as separate dives?  Yes, it
+# appears it does.
 
 our %RESIDUAL = (
 	SSI => {
@@ -132,18 +218,21 @@ our %RESIDUAL = (
 		36 => [ 3,  6,   9],
 		39 => [ 3],
 	},
+	PADI => $LIMITS{PADI},
 );
 
 # Which depths appear on our limit charts, in numerically ascending order.
 our %LIMIT_DEPTHS = (
-	SSI => [sort {$a <=> $b} keys %{$LIMITS{SSI}}],
+	SSI  => [sort {$a <=> $b} keys %{$LIMITS{SSI}}],
+	PADI => [sort {$a <=> $b} keys %{$LIMITS{PADI}}],
 );
 
 # Same for residual depths.  For SSI there are less depths on the residual
 # table, so we must interpret some repetitve dives as deeper than they
 # really are.
 our %RESIDUAL_DEPTHS = (
-	SSI => [sort {$a <=> $b} keys %{$RESIDUAL{SSI}}],
+	SSI  => [sort {$a <=> $b} keys %{$RESIDUAL{SSI}}],
+	PADI => [sort {$a <=> $b} keys %{$RESIDUAL{PADI}}],
 );
 
 =head2 new
@@ -170,6 +259,20 @@ sub new {
 	return $this;
 }
 
+sub _init {
+	my ($this, %args) = @_;
+	$this->{table}     = $args{table}   || "SSI"; # Tables to use.
+	$this->{group}     = $args{group}   || "";    # Initial group.
+	$this->{surface}   = $args{surface} || 0;     # Surface time.
+
+	$this->{dive_time} = 0; # Used for consequtive dives with less than...
+	$this->{last_depth}= 0; # ... MIN_SURFACE_TIME between them.
+
+	croak "Non-existant table $args{table} supplied" unless exists $RESIDUAL{$this->{table}};
+
+	return $this;
+}
+
 =head2 list_tables
 
   my @tables = SCUBA::Table::NoDeco->list_tables();
@@ -183,40 +286,27 @@ sub list_tables {
 	return keys %RESIDUAL;
 }
 
-=head2 max_depth
+=head2 max_table_depth
 
-  my $max_depth_ft = $stn->max_depth(units => "feet");
-  my $max_depth_mt = $stn->max_depth(units => "metres");
+  my $max_depth_ft = $stn->max_table_depth(units => "feet");
+  my $max_depth_mt = $stn->max_table_depth(units => "metres");
 
-This method provides the maximum depth provided by the tables currently
-in use.  It I<does not> supply the maximum safe depth.  The units argument
-is mandatory.
+This method provides the maximum depth for repetitive dives provided by the
+tables currently in use.  Some tables may provide a greater depth for
+non-reptetitve dives.  This function I<does not> supply the maximum safe
+depth (however see L</max_depth>).  The units argument is mandatory.
 
 =cut
 
-sub max_depth {
+sub max_table_depth {
 	my ($this, %args) = @_;
 	if ($args{units} eq "metres") {
 		return $RESIDUAL_DEPTHS{$this->table}[-1] 
 	} elsif ($args{units} eq "feet") {
 		return $RESIDUAL_DEPTHS{$this->table}[-1] / FEET2METRES;
 	} else {
-		croak "max_depth requires units parameter of 'metres' or 'feet'";
+		croak "max_table_depth requires units parameter of 'metres' or 'feet'";
 	}
-}
-
-sub _init {
-	my ($this, %args) = @_;
-	$this->{table}     = $args{table}   || "SSI"; # Tables to use.
-	$this->{group}     = $args{group}   || "";    # Initial group.
-	$this->{surface}   = $args{surface} || 0;     # Surface time.
-
-	$this->{dive_time} = 0; # Used for consequtive dives with less than...
-	$this->{last_depth}= 0; # ... MIN_SURFACE_TIME between them.
-
-	croak "Non-existant table $args{table} supplied" unless exists $RESIDUAL{$this->{table}};
-
-	return $this;
 }
 
 sub _feet2metres {
@@ -418,6 +508,9 @@ sub surface {
 This calculates the maximum no-decompression time for a dive to the
 specified depth.  The diver's current group is taken into account.
 
+If the diver cannot reach the depth supplied without breaking
+no-decompression limits then the value '0' is returned.
+
 =cut
 
 sub max_time {
@@ -426,11 +519,60 @@ sub max_time {
 	$args{metres} = $this->_feet2metres(%args);
 	my $depth = $this->_std_depth(metres => $args{metres});
 
-	my $max_time = $LIMITS{$this->{table}}{$depth}[-1] - 
-	               $this->rnt(metres => $depth);
+	my $rnt = $this->rnt(metres => $depth);
+	return 0 unless defined($rnt);
 
-	$max_time or croak "Depth of $args{metres} is not on $this->{table} table";
-	return $max_time;
+	my $max_time = $LIMITS{$this->{table}}{$depth}[-1] - $rnt;
+	$max_time = 0 if $max_time < 0;
+
+	return $max_time || 0;
+}
+
+=head2 max_depth
+
+  print "The maximum depth you may dive is ",$stn->max_depth(units => "metres")," metres\n";
+  print "Max depth for a 20 minute dive is ",$stn->max_depth(units => "feet", minutes => 20)," feet\n";
+
+This method returns the maximum possible depth given the diver's current
+group, or the maximum depth available on your table if no group is set.
+
+The method takes an optional argument (minutes), in which case the
+maximum depth for a dive of that duration will be returned.
+
+This method returns '0' if the diver is not allowed to make *any* dive
+for the period of time specified.
+
+=cut
+
+sub max_depth {
+	my ($this, %args) = @_;
+
+	$args{minutes} ||= 1;
+
+	croak "Negative minutes parameter supplied" if $args{minutes} < 0;
+	croak "Mandatory argument 'units' must be 'feet' or 'metres'"
+		unless ($args{units} and $args{units} eq 'feet' || $args{units} eq 'metres');
+
+	# False laziness alert!  Querying max_time repeatedly does
+	# provide the correct answer, but may not be particularly
+	# efficient.  There could be a better way.
+
+	foreach my $depth (reverse @{$RESIDUAL_DEPTHS{$this->table}}) {
+
+		# If the diver can spend the required amount of time
+		# at that depth, then we've got a match.
+		if ($this->max_time(metres => $depth) >= $args{minutes}) {
+			return $depth if $args{units} eq "metres";
+			return $depth / FEET2METRES;
+		}
+	}
+
+	# We've dropped off the end!  These tables say that the diver is
+	# not allowed to dive at all with their current nitrogen levels
+	# for that period of time.
+
+	return 0;
+
 }
 
 =head2 rnt
@@ -440,6 +582,9 @@ sub max_time {
 
 This method returns the I<residual nitrogen time> for a diver, in minutes.
 The depth argument (in either metres or feet) is mandatory.
+
+If the depth supplied means that the diver cannot make a no-decompression
+dive, then an undefined value is returned.
 
 =cut
 
@@ -465,9 +610,25 @@ sub rnt {
 1;
 __END__
 
+=head1 SEE ALSO
+
+L<http://pjf.id.au/perl/scuba-table-nodeco/> - SCUBA::Table::NoDeco webpage,
+including links to support mailing list.
+
+L<http://pjf.id.au/dive/calc.html> - Online dive-planner for programmers
+too lazy to use the module.
+
 =head1 BUGS
 
 Almost certainly.  If you find one, please report it to pjf@cpan.org.
+
+The PADI tables have very little testing in this release.  Please treat
+them with even more caution than normal.
+
+=head1 TODO
+
+Add the ability to specify a default unit (metres/feet) for methods
+that currently require them.
 
 =head1 AUTHOR
 
