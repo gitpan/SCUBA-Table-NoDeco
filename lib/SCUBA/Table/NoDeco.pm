@@ -1,10 +1,9 @@
 package SCUBA::Table::NoDeco;
 
 use strict;
-use warnings;
 use Carp;
 
-our $VERSION = "0.02";
+our $VERSION = "0.03";
 
 =head1 NAME
 
@@ -63,23 +62,10 @@ The following methods are provided.
 
 use constant FEET2METRES => 0.3;
 
-# XXX - MIN_SURFACE_TIME and MAX_SURFACE_TIME may be problematic,
-#	as they appear to be table dependant.  SSI tables have a
-#	minimum surface time of 10 minutes.  PADI tables do not.
-#	Likewise, SSI have a MAX_SURFACE_TIME of 12 hours, in PADI
-#	it's variable, as little as 3 hours for a group A, with the
-#	maximum only being 6 (not 12).
-#
-#	This means that these almost certainly need to be dynamic
-#	values, based upon the tables.
-
-
-
-# Less than 10 minutes surface is considered part of the same dive.
-use constant MIN_SURFACE_TIME => 10;
-
-# More than MAX_SURFACE_TIME will consider us completely off-gassed.
-use constant MAX_SURFACE_TIME => 12*60;
+our %MIN_SURFACE_TIME = (
+	SSI => 10,	# Less than 10 minutes is considered same dive.
+	PADI => 0,	# PADI doesn't have a minimum surface time.
+);
 
 our %LIMITS = (
     SSI => {
@@ -127,12 +113,12 @@ our %LIMITS = (
 	#100 feet
 	30.0	=> [  3,   6,  8,  9, 10,  11,  12,  13,  14,  15,  16,  17,
 		     18,  19, 20],
-	#110 feet - XXX, Does the double-13 work here?  Test!!!
+	#110 feet
 	33.0	=> [  3,   6,  7,  8,  9,  10,  11,  12,  13,  13,  14,  15,
 		     16],
-	#120 feet - XXX, Test double-11
+	#120 feet
 	36.0	=> [  3,   5,  6,  7,  8,   9,  10,  11,  11,  12,  13],
-	#130 feet - XXX, Test double-7
+	#130 feet
 	39.0	=> [  3,   5,  6,  7,  7,   8,   9,  10],
 	#140 feet
 	42.0	=> [  0,   4,  5,  6,  7,   8],
@@ -172,7 +158,17 @@ our %SURFACE = (
 # appears to be added to each group transition beyond the first.
 # As such, we can dynamically generate the PADI surface table.
 
-# XXX - PJF, Test this lots and lots.
+# Unfortunately, this doesn't hold true for everything.  Some particular
+# entries have minor variations that then dissapear.  For example, D is
+# regular, E is not (there's a minute that's gained), and F
+# is regular.  Whether these are mistakes, intentional changes to
+# perform some sort of fingerprinting, or intentional changes with
+# a sound backing, I'm not sure.
+
+# In any case, it certainly makes testing more difficult.  What's
+# more correct, the table, or the precursor tables from which it appears
+# to have been derived?  I think for the moment we have to assume that
+# the tables themselves are considered definitive.
 
 {
 	my @surface = ( 3*60, 47, 21, 8, (7) x 2, 6, (5) x 3, (4) x 3,
@@ -183,15 +179,23 @@ our %SURFACE = (
 		my $end   = $start;
 		while ($end >= 0) {
 			$accum += $surface[$end];
-			$SURFACE{PADI}{chr(ord('A')+$start)}{chr(ord('A')+$end)}
-				= $accum         # Accumulated time
-				+ $start - $end; # Number of groups passed.
+			$SURFACE{PADI}
+			        {chr(ord('A')+$start)}
+			        {$accum + $start - $end} = chr(ord('A')+$end);
 			$end--;
 		}
 	}
 
 }
 
+# Per-row tweaks.  'E' gains a minute for moves to B and A.
+
+delete $SURFACE{PADI}{E}{86};	$SURFACE{PADI}{E}{87}  = "B";
+delete $SURFACE{PADI}{E}{267};	$SURFACE{PADI}{E}{268} = "A";
+
+# The 'O' and 'P' rows also does a funny thing at the end.
+delete $SURFACE{PADI}{O}{142};	$SURFACE{PADI}{O}{143} = "B";
+delete $SURFACE{PADI}{P}{146};	$SURFACE{PADI}{P}{147} = "B";
 
 # The PADI tables are highly consistant, in that the residual time
 # for each group is equal to the dive times on table 1.  This means
@@ -419,7 +423,7 @@ sub dive {
 	my $depth = $this->_std_depth(metres => $args{metres});
 	my $tbt;
 
-	if ($this->surface > MIN_SURFACE_TIME) {
+	if ($this->surface > $MIN_SURFACE_TIME{$this->table}) {
 		$tbt = $args{minutes} + $this->rnt(metres => $depth);
 	} else {
 		$tbt = $this->{dive_time} + $args{minutes};
@@ -460,23 +464,38 @@ has no group, represented by the empty string.
 
 sub group { 
 	my $this = shift;
-	if ($this->{surface} <= MIN_SURFACE_TIME) {
+
+	# If we're below the minimum surface time for this table,
+	# we're considered to be part of the same dive.
+	if ($this->{surface} <= $MIN_SURFACE_TIME{$this->table}) {
 		return $this->{group};
-	} elsif ($this->{surface} >= MAX_SURFACE_TIME) {
-		return "";
 	}
 
 	# Looks like we've been off-gassing for a while.  Let's
 	# find what group we're in now.
 
+	# Make sure that we have an entry for our current state.
+	keys %{$SURFACE{$this->{table}}{$this->{group}}}
+		or croak "Incomplete table exists in $this->{table} for group $this->{group}";
+
+	# POSSIBLE OPTIMIZATION - Cache the result of this sort,
+	# or produce a pre-sorted data strucuture.
+
 	my @times = sort {$a <=> $b} keys %{$SURFACE{$this->{table}}{$this->{group}}};
 
 	foreach my $time (@times) {
-		if ($this->{surface} < $time) {
+		# XXX - Changed from '<' to '<=' to accomodate PADI
+		#       tables.  Does this break the SSI tables, or did
+		# 	they also have an off-by-one error?  Check!
+		if ($this->{surface} <= $time) {
 			return $SURFACE{$this->{table}}{$this->{group}}{$time};
 		}
 	}
-	die("Incomplete table for $this->{surface} minutes surface interval in group $this->{group}");
+
+	# If we run out of times, then they must be completely off-gassed.
+	# XXX - This is a dangerous assumption if we ever have an incomplete
+	# table.
+	return "";
 }
 
 
@@ -495,6 +514,9 @@ elapsed.
 # Returns total surface time.
 sub surface {
 	my ($this, %args) = @_;
+	if (%args and ! $args{minutes}) {
+		croak "Mandatory argument 'minutes' missing from call to surface";
+	}
 	$args{minutes} or return $this->{surface};
 	$this->{surface} += $args{minutes};
 	return $this->{surface};
@@ -622,8 +644,9 @@ too lazy to use the module.
 
 Almost certainly.  If you find one, please report it to pjf@cpan.org.
 
-The PADI tables have very little testing in this release.  Please treat
-them with even more caution than normal.
+The PADI tables are generated from an algorithm which provides almost
+an exact match to the printed PADI tables, however there are some
+inconsistancies.  Treat the PADI tables with particular care.
 
 =head1 TODO
 
